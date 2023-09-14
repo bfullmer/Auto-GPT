@@ -1,4 +1,4 @@
-name: AutoGPTs CI
+name: Valid AutoGPTs
 
 on:
   workflow_dispatch:
@@ -6,20 +6,54 @@ on:
   schedule:
     - cron: '0 8 * * *'
   push:
-    branches: [master, ci-test*]
+    branches:
+      - master
+      - ci-test*
     paths:
-      - 'autogpts/forge/**'
-      - '.github/workflows/autogpts-ci.yml'
+      - 'autogpts/**'
   pull_request:
     branches: [stable, master, release-*]
     paths:
-      - 'autogpts/forge/**'
-      - '.github/workflows/autogpts-ci.yml'
+      - 'autogpts/**'
 
 jobs:
-  agent-protocol-test:
+  check-changes:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        agent-name: [autogpt, forge]
+      fail-fast: false
+    outputs:
+      skip_job: ${{ steps.check_changes.outputs.skip_job }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.ref }}
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          submodules: true
+
+      - name: Check if changes are in autogpts/${{ matrix.agent-name }}
+        id: check_changes
+        run: |
+          if [[ -n $(git diff --name-only ${{ github.event.before }} ${{ github.sha }} | grep "^autogpts/${{ matrix.agent-name }}/.*") ]]; then
+            echo "Changes found in autogpts/${{ matrix.agent-name }}. Proceeding with the job."
+          else
+            echo "No changes found in autogpts/${{ matrix.agent-name }}. Skipping the job."
+            echo "::set-output name=skip_job::true"  # Set an output to skip the job
+          fi
+        shell: bash
+
+  run-tests:
+    needs: [check-changes]
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        agent-name: [autogpt, forge]
+      fail-fast: false
     timeout-minutes: 20
+    if: ${{ needs.check-changes.outputs.skip_job != 'true' }}  # Skip the entire job based on the output of check-changes
     steps:
       - name: Checkout repository
         uses: actions/checkout@v3
@@ -35,14 +69,14 @@ jobs:
           python-version: ${{ env.min-python-version }}
 
       - name: Install Poetry
-        working-directory: ./autogpts/forge/
+        working-directory: ./autogpts/${{ matrix.agent-name }}/
         run: |
           curl -sSL https://install.python-poetry.org | python -
 
       - name: Run regression tests
-        working-directory: ./autogpts/forge/
+        working-directory: ./autogpts/${{ matrix.agent-name }}/
         run: |
-          sh run_agent.sh
+          sh run
           URL=http://127.0.0.1:8000 bash -c "$(curl -fsSL https://raw.githubusercontent.com/AI-Engineers-Foundation/agent-protocol/main/testing_suite/test.sh)"
           poetry run agbenchmark start --mock
           poetry run agbenchmark start --test=TestWriteFile
